@@ -82,12 +82,23 @@ class Optimize:
         Features = list(DATA.keys())[:-1]
         best_subset = []
         BestResult = 1000
+
+        if self.Model.Method == 'NegativeBinomial':
+            mask_clearFeatureSubsets = {'ModelFormula': {}}
+
+        elif self.Model.Method == 'RandomForest':
+            mask_clearFeatureSubsets = {'FeatureSubset': {}}
+
+        elif self.Model.Method == 'LSTM':
+            mask_clearFeatureSubsets = {}
+            # TODO should updated according to LSTM arch.
+
         for i in range(len(Features), 0, -1):
             PossibleCombinations = list(itertools.combinations(Features, i))
             for combination in PossibleCombinations:
                 DATA_Train_new = DATA_Train[list(combination)].copy()
                 DATA_Test_new = DATA_Test[list(combination)].copy()
-                self.Model.Train(DATA_Train_new, {'ModelFormula': {}})
+                self.Model.TrainModel(DATA_Train_new, mask_clearFeatureSubsets)
                 predictions = self.Model.Predict(DATA_Test_new)
                 MAE = self.Model.CalculatePerformance(predictions, DATA_Test_new.iloc[:, -1].to_numpy().astype(int))
                 if MAE < BestResult:
@@ -98,7 +109,7 @@ class Optimize:
 
         DATA_Train_new = DATA_Train[best_subset].copy()
         DATA_Test_new = DATA_Test[best_subset].copy()
-        self.Model.Train(DATA_Train_new, {'ModelFormula': {}})
+        self.Model.TrainModel(DATA_Train_new, mask_clearFeatureSubsets)
         predictions = self.Model.Predict(DATA_Test_new)
         MAE = self.Model.CalculatePerformance(predictions, DATA_Test_new.iloc[:, -1].to_numpy().astype(int))
 
@@ -120,7 +131,7 @@ class Optimize:
                 else:
                     params[key] = combination
 
-            self.Model.Train(DATA_Train, params)
+            self.Model.TrainModel(DATA_Train, params)
             predictions = self.Model.Predict(DATA_Test)
             MAE = self.Model.CalculatePerformance(predictions, DATA_Test.iloc[:, -1].to_numpy().astype(int))
 
@@ -128,7 +139,7 @@ class Optimize:
                 BestResult = MAE
                 BestParameters = params
 
-        self.Model.Train(DATA_Train, BestParameters)
+        self.Model.TrainModel(DATA_Train, BestParameters)
         predictions = self.Model.Predict(DATA_Test)
         MAE = self.Model.CalculatePerformance(predictions, DATA_Test.iloc[:, -1].to_numpy().astype(int))
 
@@ -141,22 +152,30 @@ class RandomForest:
         self.RandomForest = {}
         self.n_estimators = 100
         self.random_state = 8
+        self.FeatureSubset = []
         self.Optimize = Optimize(self)
-        self.__dict__.update(args)
+        self, options = UpdateOptions(self, args)
 
     def Train(self, data, args={}):
-        self.__dict__.update(args)
+        self, options = UpdateOptions(self, args)
 
-        train_X = data.iloc[:, :-1]
-        train_Y = data.iloc[:, -1]
+        if len(self.FeatureSubset != 0):
+            DATA_Train_new = data[self.FeatureSubset].copy()
+            print("Unused features have been removed "
+                  "according to FeatureSubset Attribute!")
+        else:
+            DATA_Train_new = data.copy()
+
+        train_X = DATA_Train_new.iloc[:, :-1]
+        train_Y = DATA_Train_new.iloc[:, -1]
+
         self.RandomForest = RandomForestRegressor(n_estimators=self.n_estimators,
                                                   random_state=self.random_state)
-        self.randForestModel.fit(train_X, train_Y)
-
+        self.RandomForest.fit(train_X, train_Y)
 
     def Predict(self, data):
 
-        predictions = self.randForestModel.predict(test_X).astype(int)
+        predictions = self.RandomForest.predict(data).astype(int)
         return predictions
 
     def CalculatePerformance(self, result, target):
@@ -170,6 +189,7 @@ class RandomForest:
 class LSTM:
     pass
 
+
 class NegativeBinomial:
 
     def __init__(self, args={}):
@@ -178,7 +198,7 @@ class NegativeBinomial:
         self.alpha = 100
         self.ModelFormula = ''
         self.Optimize = Optimize(self)
-        self.__dict__.update(args)
+        self, options = UpdateOptions(self, args)
 
     def extractFormula(self, data):
         columns = data.columns
@@ -190,7 +210,8 @@ class NegativeBinomial:
         self.ModelFormula = ModelFormula
 
     def Train(self, data, args={}):
-        self.__dict__.update(args)
+
+        self, options = UpdateOptions(self, args)
 
         if len(self.ModelFormula) == 0:
             self.extractFormula(data)
@@ -251,7 +272,9 @@ class Train:
         ValidationData = {}
         start = 0
         for i in range(0, self.NFolds):
+
             stop = start + stepsize
+
             if stop > size:
                 stop = size
 
@@ -259,11 +282,7 @@ class Train:
             train_indx = indx[:start] + indx[stop:]
 
             ValidationData[i] = Data.iloc[validation_indx, :].reset_index(drop=True)
-            if i == 0:
-                TrainingData[i] = Data.iloc[train_indx, :].reset_index(drop=True)
-            else:
-                TrainingData[i] = pd.concat([TrainingData[i - 1], Data.iloc[train_indx, :].reset_index(drop=True)],
-                                            ignore_index=True)
+            TrainingData[i] = Data.iloc[train_indx, :].reset_index(drop=True)
 
             start = stop
 
@@ -278,12 +297,12 @@ class Train:
         # Train Model:
 
         if self.TrainRatio == 1:
-            Model.Train(TrainingData.get(0))
+            Model.TrainModel(TrainingData.get(0))
             return Model, -1
         else:
             Performance = []
             for i in range(0, self.NFolds):
-                Model.Train(TrainingData.get(i))
+                Model.TrainModel(TrainingData.get(i))
                 Performance.append(Model.CalculatePerformance(Model.Predict(ValidationData.get(i).iloc[:, :-1]),
                                                               ValidationData.get(i).iloc[:, -1]))
 
@@ -294,27 +313,26 @@ class Learner:
 
     def __init__(self, method, args={}):
 
+        self, options = UpdateOptions(self, args)
+
         if method == 'NegativeBinomial':
             self.Method = 'NegativeBinomial'
-            self, options = UpdateOptions(self, args)
             self.Model = NegativeBinomial(options)
 
         elif method == 'RandomForest':
             self.Method = 'RandomForest'
-            self, options = UpdateOptions(self, args)
             self.Model = RandomForest(options)
 
         elif method == 'LSTM':
             self.Method = 'LSTM'
-            self, options = UpdateOptions(self, args)
             self.Model = LSTM(options)
 
-        self.Train = Train(options)
+        self.TrainModel = Train(options)
 
-    def TrainModel(self, DATA):
+    def TrainModel(self, DATA, args={}):
 
-        self.Model, accuracy = self.Train.TrainModel(self.Model, DATA)
-
+        self, options = UpdateOptions(self, args)
+        self.Model, accuracy = self.TrainModel.TrainModel(self.Model, DATA)
         return accuracy
 
     def Predict(self, DATA):
@@ -324,7 +342,7 @@ class Learner:
     def OptimizeFeatures(self, DATA):
 
         features, accuracy = self.Model.Optimize.OptFeatures(DATA)
-
+        print("Feature subset that used updated.")
         return features, accuracy
 
     def OptimizeModelParameters(self, DATA, parameter2try):
